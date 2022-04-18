@@ -1,0 +1,82 @@
+<% 
+	. /etc/chilli/config
+	
+	wan_status=false
+	smartap_server_ip=`uci -q get indiochilli.smartap.my_server_ip`
+
+	if [[ -z $smartap_server_ip ]]; then
+        	udp_test_string="8.8.8.8"
+	else
+		udp_test_string="  $smartap_server_ip "
+	fi
+
+	if  ping -q -w 1 -c 1 8.8.8.8  > /dev/null 2>&1 ||  ping -q -w 1 -c 1 8.8.4.4  > /dev/null 2>&1 ||  ping -q -w 1 -c 1 $udp_test_string &> /dev/null; then
+		wan_status=true
+	fi
+%>
+<!DOCTYPE html>
+<html>
+<head>
+	<title>Login to wifi service</title>
+	<% if $wan_status; then %>
+		<script type='text/javascript'>
+			var i = 0;
+			var elem;
+
+			function timeoutHandler() {
+				if(i < 5)
+					elem.innerHTML += ".";
+				else
+					elem.innerHTML = "";
+				if(i < 7)
+					i++;
+				else
+					i = 0;
+				setTimeout(timeoutHandler, 135);
+			}
+
+			function onloadHandler() {
+				elem = document.getElementById("loadingdots");
+				setTimeout(timeoutHandler, 200);
+				document.loginform.submit();
+			}
+		</script>
+	<% else %>
+		<script type='text/javascript'>
+			var elem;
+			var timer = 3;
+
+			function reloadTimer() {
+				if(timer <= 1)
+					location.reload()
+				else
+					elem.innerHTML = --timer;
+				setTimeout(reloadTimer, 1000);
+			}
+
+			function onloadHandler() {
+				elem = document.getElementById("reloadtimer");
+				setTimeout(reloadTimer, 1000);
+			}
+		</script>
+	<% fi %>
+</head>
+	<body onload='onloadHandler()'>
+	<% if $wan_status; then %>
+		<h1>Loading<span id='loadingdots'></span></h1>
+		<form name='loginform' method='POST' action='<% echo -n $HS_PORTAL %>'>
+			<%
+				for var in $(env); do
+					if [[ $var =~ (GET_[[:alnum:]_]+)=.* ]]; then
+						varname=${BASH_REMATCH[1]}
+						echo "<input type='hidden' name='${varname##GET_}' value='${!varname}'>"
+					fi
+				done
+			%>
+		</form>
+	<% else %>
+		<h1>Internet is down. Sorry for the inconvinience. Please try again later.</h1>
+		<h2>Retrying in <span id='reloadtimer'>3</span> seconds</h2>
+	<% fi %>
+	</body>
+</html>

@@ -1,0 +1,73 @@
+#!/bin/bash
+
+wanIf=$(uci -q get indiochilli.smartap.hs_uplink_interface)
+lanIf=$(uci -q get indiochilli.smartap.hs_downlink_interface)
+
+if [[ $(uci -q get network.wan.proto) == pppoe ]]; then
+	wanIf=pppoe-wan
+fi
+
+if [[ $(uci get indiochilli.smartap.chilli_bridge_mode) -eq 1 ]]; then
+	wanIf=
+	lanIf=
+
+	for lan_dev in $(uci get indiochilli.smartap.lan_dev) $(ifconfig -a | egrep -o 'wlan-hs[0-9]+'); do
+		lanIf="$lanIf $lan_dev"
+	done
+
+	for wan_dev in $(uci get indiochilli.smartap.hs_uplink_dev); do
+		wanIf="$wanIf $wan_dev"
+	done
+fi
+
+if [[ $WISPR_BANDWIDTH_MAX_DOWN -gt 0 ]]; then
+	for lan_dev in $lanIf; do
+		tc filter del dev $lan_dev prio $CLASS_ID
+		tc class del dev $lan_dev classid 1:$CLASS_ID
+	done
+fi
+
+if [[ $WISPR_BANDWIDTH_MAX_UP -gt 0 ]]; then
+	for wan_dev in $wanIf; do
+		tc filter del dev $wan_dev prio $CLASS_ID
+		tc class del dev $wan_dev classid 2:$CLASS_ID
+	done
+fi
+
+default_gw=`route -n | grep 'UG[ \t]' | awk '{print $2}'`
+if [[ -z $default_gw ]]; then
+        default_gw="10.0.0.1"
+fi
+
+#DELETE ANY CONNECTION WHICH IN ESTABLISHED STATE FOR THIS USER
+value()
+{
+    echo ${1#*=}
+}
+
+conntrack_log_file="/tmp/conntrack.log"
+
+if [[ -z "${FRAMED_IP_ADDRESS}" ]];then
+	exit
+fi
+
+/usr/sbin/conntrack -L conntrack 2>/dev/null | egrep "$FRAMED_IP_ADDRESS" > ${conntrack_log_file}
+#Delete all TCP connections
+cat ${conntrack_log_file} | grep -i "tcp" |
+while read proto _ _ _ src dst sport dport _;
+do
+       	#echo `value $src`  `value $dst` $sport $dport
+        /usr/sbin/conntrack -D conntrack --proto tcp \
+					 --orig-src "$(value $src)" \
+					 --orig-dst "$(value $dst)" 2>/dev/null
+done
+
+#Delete all UDP connections
+cat ${conntrack_log_file} | grep -i "udp" |
+while read proto _ _ src dst sport dport _;
+do
+       	#echo `value $src`  `value $dst` $sport $dport
+        /usr/sbin/conntrack -D conntrack --proto udp \
+					 --orig-src "$(value $src)" \
+					 --orig-dst "$(value $dst)" 2>/dev/null
+done

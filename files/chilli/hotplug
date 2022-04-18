@@ -1,0 +1,32 @@
+#!/bin/bash
+
+/etc/init.d/chilli enabled || exit
+. /etc/chilli/functions
+
+if [[ $INTERFACE == wan ]] && [[ $ACTION =~ ifup ]] && /etc/init.d/chilli status; then
+	. /etc/chilli/defaults
+	. /etc/chilli/config
+	PT=${HS_UAMALLOW//,/ } # replace comma with space so that we can iterate
+
+	if [[ $(uci get indiochilli.smartap.enable_chilli_kname) -eq 0 ]]; then
+		for pt in $PT; do
+			/usr/sbin/chilli_query addgarden data $pt
+		done
+	else
+		for pt in $PT; do
+			if [[ $pt =~ [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+				ipset -q add passthrough $pt
+			else
+				for ip in $(name2ip $pt); do
+					ipset -q add passthrough $ip
+				done
+			fi
+		done
+	fi
+elif [[ $ACTION == ifup ]] && ( [[ $INTERFACE == lan ]] || ( [[ $INTERFACE == wan2 ]] && [[ $(uci get indiochilli.smartap.chilli_bridge_mode) -eq 1 ]] ) ); then
+	# we need to restart chilli on lan interface up down because
+	# it needs to reopen br-lan in promisc mode for tun interface
+
+	# in case of bridge mode we restart it only on ifup condition
+	/etc/init.d/chilli restart
+fi

@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html>
+<head>
+	<title>Login to wifi service</title>
+</head>
+<body onload=''>
+<br><br><br>
+	<center>
+            <table width=70% border=1 bordercolordark=#E0E0E0 bordercolorlight=#000000 cellspacing=0 cellpadding=1>
+		<tr><td valign=center align=center><b><font size=2>Logging you in. Please wait...</font></b></td></tr>
+	    </table>
+	    <br>
+            <img src="ajax-loading.gif"/>        
+	</center>
+<script src="jquery-1.10.1.min.js" type="text/javascript"></script>
+<script>
+
+var login_url="http://10.0.0.1:3990/logon";
+var login_username="";
+var login_response="";
+var success_url="";
+var failure_url="";
+var login_sid="";
+
+<%
+	for var in $(env); do
+		if [[ $var =~ (GET_[[:alnum:]_]+)=.* ]]; then
+			varname=${BASH_REMATCH[1]}
+			echo "${varname##GET_}='${!varname}';"
+		fi
+	done
+%>
+
+
+var netStatus = 123;
+var loginurl=login_url + '?username=' + login_username + '&response=' + login_response;
+var successurl=success_url + '?sid=' + login_sid + '&temploggedin=1';
+var failureurl=failure_url + '?sid=' + login_sid + '&temploggedin=-1';
+
+function templogin(){
+	console.log('templogin():' + loginurl); 
+	$.ajax({
+	url: loginurl,
+		method: 'GET',
+		crossDomain: true,
+		success:function(response){
+
+		}
+	});
+}
+
+function templogincheck(){
+
+	$.ajax({
+	url: 'http://10.0.0.1:3990/json/status',
+		method: 'GET',
+		crossDomain: true,
+		dataType: 'jsonp',
+		success:function(jsondata){
+			console.log(jsondata);
+			netStatus = jsondata.clientState;
+		}
+	});
+}
+
+$(document).ready(function() {
+
+	templogin();
+	var i = 1;
+
+	function myLoop() {			//  create a loop function
+		setTimeout(function() {		//  call a 3s setTimeout when the loop is called
+			templogincheck();
+			console.log("\nNetStatus = " + netStatus);
+			if(netStatus == 1){
+				i=10;
+				location.replace(successurl);
+			}else{
+				i++;					//  increment the counter
+				if (i < 10) {				//  if the counter < 10, call the loop function
+					console.log("\nLoop Counter = " + i);
+					myLoop();			//  ..  again which will trigger another
+				}else{
+					location.replace(failureurl);
+				}	
+			}	
+		}, 3000)
+	}
+	myLoop();
+});
+
+
+</script>
+</body>
+</html>

@@ -1,0 +1,164 @@
+#!/bin/bash /etc/rc.common
+
+START=99
+STOP=15
+EXTRA_COMMANDS='status'
+
+. /etc/chilli/functions
+
+status() {
+	if [[ -e $PIDFILE ]]; then
+		local cmdline=/proc/$(cat $PIDFILE)/cmdline
+		if [[ -f /proc/$(cat $PIDFILE)/cmdline ]] && grep -q /usr/sbin/chilli $cmdline; then
+			return 0
+		fi
+	fi
+	return 1
+}
+
+start() {
+	if ! [[ $(uci -q get indiochilli.smartap.configured) == 1 ]]; then
+		return
+	fi
+
+	# no need to start again if already running
+	if status; then
+		return
+	fi
+
+	check_required
+	. /etc/chilli/defaults # read the variables
+
+	# enable SSL portal only if SSL portal has been configured
+	# in HS_UAMFORMAT. So we will serve the wan tester script over SSL too
+	if [[ $HS_UAMFORMAT =~ ^https ]]; then
+		PortalConfig=$(cat <<-PORTAL
+			#HS_SSLKEYFILE=/etc/chilli/ssl.key
+			#HS_SSLCAFILE=/etc/chilli/ca.crt
+			#HS_SSLCERTFILE=/etc/chilli/cloudmax.crt
+			#HS_UAMUISSL=on
+			#HS_UAMALIASNAME=cloudmax.wifi-soft.com
+			#HS_UAMFORMAT='https://\$HS_UAMALIASNAME:\$HS_UAMUIPORT/www/login.chi'
+			#NOTE: MSA
+			#For now redirection will be handled in exactly same way as http portal
+			#is handled. No need to have special handling
+			#https redirection is different from redirecting to https portal url
+
+			HS_SSLKEYFILE=
+			HS_SSLCAFILE=
+			HS_SSLCERTFILE=
+			HS_UAMUISSL=off
+			HS_UAMALIASNAME=
+			HS_UAMFORMAT='http://\$HS_UAMLISTEN:\$HS_UAMPORT/www/login.chi'
+		PORTAL
+		)
+	else
+		PortalConfig=$(cat <<-PORTAL
+			HS_SSLKEYFILE=
+			HS_SSLCAFILE=
+			HS_SSLCERTFILE=
+			HS_UAMUISSL=off
+			HS_UAMALIASNAME=
+			HS_UAMFORMAT='http://\$HS_UAMLISTEN:\$HS_UAMPORT/www/login.chi'
+		PORTAL
+		)
+	fi
+
+	# enable redirector process on devices with > 32 MB RAM
+	Redirector=$(awk '/MemTotal/ { if($2 > 32768) print "on" }' /proc/meminfo)
+
+	rm -f /tmp/dnsmasq.d/passthrough
+	if [[ $(uci get indiochilli.smartap.enable_chilli_kname) -eq 1 ]]; then
+		if [[ $(uci get indiochilli.smartap.chilli_bridge_mode) -eq 1 ]]; then
+			NetConfig=$(cat <<-KMODBR
+				HS_NETWORK=198.18.0.0
+				HS_UAMLISTEN=198.18.0.1
+				HS_NETMASK=255.255.254.0
+				HS_NASIP=198.18.0.1
+				HS_DNS1=198.18.0.1
+				HS_STATIP=198.18.0.0
+				HS_STATIP_MASK=255.255.254.0
+				HS_ANYIP=on
+			KMODBR
+			)
+			# override this because it will be added
+			# in passthrough below
+			HS_UAMLISTEN=$ip
+
+			# set this flag so that HS_STATIP configuration is not added below
+			bridgemode=""
+		else
+			NetConfig=$(cat <<-KMOD
+				HS_ANYIP=off
+			KMOD
+			)
+		fi
+
+		KernelMode=$(cat <<-KMOD
+			HS_KNAME=chilli
+			HS_CONUP=/etc/chilli/conup.sh
+			HS_CONDOWN=/etc/chilli/condown.sh
+			${bridgemode:-HS_STATIP=$HS_NETWORK}
+			${bridgemode:-HS_STATIP_MASK=$HS_NETMASK}
+		KMOD
+		)
+
+		ipset -q create passthrough hash:ip
+		mkdir -p /tmp/dnsmasq.d
+		for uamdomain in ${HS_UAMDOMAINS//,/ }; do
+			echo "ipset=/$uamdomain/passthrough"
+		done | sort | uniq > /tmp/dnsmasq.d/passthrough
+	else
+		KernelMode=$(cat <<-KMOD
+			HS_KNAME=
+			HS_CONUP=
+			HS_CONDOWN=
+		KMOD
+		)
+	fi
+
+	# copy HS_UAMFORMAT to HS_PORTAL in /etc/chilli/config
+	cat <<-EOC > /etc/chilli/config
+		$PortalConfig
+		HS_PORTAL='$HS_UAMFORMAT'
+		# need to add self in pass through for ssh to AP from lan side	
+		HS_UAMALLOW='$HS_UAMLISTEN,$HS_UAMALLOW,192.168.10.1'
+		HS_UAMDOMAINS='$HS_UAMLISTEN,$HS_UAMDOMAINS'
+		HS_REDIR=${Redirector:-off}
+		$KernelMode
+		$NetConfig
+	EOC
+
+	. /etc/chilli/config # read the file we generated for updated vars
+	writeconfig
+
+	echo "$HS_UAMLISTEN indiochilli.ap logout.wifi wifi.indionetworks.com" > /tmp/hosts/chilli
+	if [[ -e /var/run/dnsmasq/dnsmasq.pid ]] && [[ $(uci get indiochilli.smartap.enable_chilli_kname) -eq 0 ]]; then
+		kill -HUP $(cat /var/run/dnsmasq/dnsmasq.pid)
+	else
+		/etc/init.d/dnsmasq restart
+	fi
+
+	if [[ $(uci get indiochilli.smartap.enable_chilli_kname) -eq 1 ]]; then
+		/usr/sbin/chilli -c /etc/chilli.conf --nodynip --leaseplus=0
+	else
+		/usr/sbin/chilli -c /etc/chilli.conf
+	fi
+}
+
+stop() {
+	if status; then
+		kill $(cat $PIDFILE)
+		while status; do
+			sleep 0.2
+		done
+		# bin files get accumulated
+		# names keep changing based on pid
+		rm -f $RUN_D/*.bin
+	fi
+}
+
+boot() {
+	# will be launched by lan interface hotplug if service is enabled
+	return
+}

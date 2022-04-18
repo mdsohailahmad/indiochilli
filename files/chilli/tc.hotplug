@@ -1,0 +1,58 @@
+#!/bin/bash
+
+TC=/usr/sbin/tc
+
+if ! [[ -x $TC ]]; then
+	logger -t tc "traffic control not supported"
+fi
+
+setup_lan_tc() {
+	local ifname=$1
+	$TC qdisc add dev $ifname parent root handle 1: htb default 1
+	$TC class add dev $ifname parent 1:0 classid 1:1 htb rate 1000Mbit
+}
+
+setup_wan_tc() {
+	local ifname=$1
+	$TC qdisc add dev $ifname parent root handle 2: htb default 1
+	$TC class add dev $ifname parent 2:0 classid 2:1 htb rate 1000Mbit
+}
+
+if [[ $(uci get indiochilli.smartap.enable_chilli_kname) == 1 ]]; then
+	if [[ $ACTION == ifup ]]; then
+		if [[ $INTERFACE == lan ]]; then
+			setup_lan_tc $DEVICE
+		elif [[ $INTERFACE == wan ]]; then
+			if [[ $(uci get indiochilli.smartap.chilli_bridge_mode) -eq 1 ]]; then
+				for lan_dev in $(uci get indiochilli.smartap.lan_dev) $(ifconfig -a | egrep -o 'wlan-hs[0-9]+'); do
+					setup_lan_tc $lan_dev
+				done
+				for wan_dev in $(uci get indiochilli.smartap.hs_uplink_dev); do
+					setup_wan_tc $wan_dev
+				done
+			else
+				setup_wan_tc $DEVICE
+			fi
+		fi
+	elif [[ $ACTION == ifdown ]]; then
+		if [[ $(uci get indiochilli.smartap.chilli_bridge_mode) -eq 1 ]]; then
+			for lan_dev in $(uci get indiochilli.smartap.lan_dev) $(ifconfig -a | egrep -o 'wlan-hs[0-9]+'); do
+				$TC qdisc del dev $lan_dev parent root
+			done
+			for wan_dev in $(uci get indiochilli.smartap.hs_uplink_dev); do
+				$TC qdisc del dev $wan_dev parent root
+			done
+		else
+			$TC qdisc del dev $DEVICE parent root
+		fi
+	fi
+else
+	for iface in /sys/class/net/$DEVICE/lower_*; do
+		iface=${iface##*lower_}
+		if [[ $ACTION == ifup ]]; then
+			$TC qdisc add dev $iface parent root sfq perturb 10 headdrop
+		elif [[ $ACTION == ifdown ]]; then
+			$TC qdisc del dev $DEVICE parent root
+		fi
+	done
+fi

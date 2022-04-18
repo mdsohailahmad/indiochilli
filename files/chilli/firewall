@@ -1,0 +1,124 @@
+#!/bin/bash
+
+. /etc/chilli/functions
+if /etc/init.d/chilli enabled && [[ -e $RUN_D/tunname ]]; then
+	tunname=$(cat $RUN_D/tunname)
+	do_file=$RUN_D/$tunname-do.sh
+	undo_file=$RUN_D/$tunname-undo.sh
+	chmod +x $undo_file $do_file 2>&-
+
+	if [[ $(uci get indiochilli.smartap.bridge_mode_without_vlan) -eq 1 ]]; then
+		interface=$(uci -q get indiochilli.smartap.hs_uplink_interface)
+		[[ -z "${interface}" ]] && interface="up0v0"
+	else
+		interface=$(uci -q get indiochilli.smartap.hs_downlink_interface)
+		[[ -z "${interface}" ]] && interface="down1v0"
+	fi
+
+	if [[ -e $undo_file ]] && $undo_file 2>&-
+	then
+		if [[ $(uci get indiochilli.smartap.enable_chilli_kname) -eq 1 ]]; then
+			iptables -w -D FORWARD -m physdev --physdev-is-bridged --physdev-in mesh+ -j ACCEPT
+			iptables -w -D FORWARD -m physdev --physdev-is-bridged --physdev-out mesh+ -j ACCEPT
+			if [[ $(uci get indiochilli.smartap.chilli_bridge_mode) -eq 1 ]]; then
+				sysctl -w -q net.bridge.bridge-nf-call-iptables=0
+				iptables -w -D FORWARD -p udp --dport 67:68 -j ACCEPT
+				iptables -w -D FORWARD -m pkttype --pkt-type broadcast -j ACCEPT
+				iptables -w -D FORWARD -m pkttype --pkt-type multicast -j ACCEPT
+
+				if [[ $(uci get indiochilli.smartap.bridge_mode_without_vlan) -eq 1 ]]; then
+					iptables -w -D FORWARD -p udp --dport 53 -j ACCEPT
+					iptables -w -D FORWARD -p udp --sport 53 -j ACCEPT
+				fi
+
+				for lan_if in $(uci get indiochilli.smartap.lan_dev) wlan-hs+; do
+					iptables -w -i $interface -D FORWARD -m physdev --physdev-is-bridged --physdev-in $lan_if -j forwarding_from_lan
+					iptables -w -i $interface -t mangle -D FORWARD -m physdev --physdev-is-bridged --physdev-in $lan_if -j forwarding_from_lan
+					iptables -w -o $interface -D FORWARD -m physdev --physdev-is-bridged --physdev-out $lan_if -j forwarding_to_lan
+					iptables -w -o $interface -t mangle -D FORWARD -m physdev --physdev-is-bridged --physdev-out $lan_if -j forwarding_to_lan
+					iptables -w -i $interface -t nat -D PREROUTING -m physdev --physdev-is-in --physdev-in $lan_if -j prerouting_from_lan
+					ebtables -t broute -D BROUTING -i $lan_if -p ip --ip-dst 198.18.0.1 -j redirect
+				done
+
+				for hs_up_if in $(uci get indiochilli.smartap.hs_uplink_dev); do
+					ebtables -t filter -D INPUT -i $hs_up_if -p arp --arp-opcode request --arp-htype ethernet --arp-ptype ipv4 --arp-ip-dst 198.18.0.1 -j DROP
+					ebtables -t filter -D FORWARD -i $hs_up_if -p arp --arp-opcode request --arp-htype ethernet --arp-ptype ipv4 --arp-ip-dst 198.18.0.0/23 -j DROP
+					ebtables -t filter -D INPUT -i $hs_up_if -p arp --arp-opcode request --arp-htype ethernet --arp-ptype ipv4 --arp-ip-dst 192.168.10.1 -j DROP
+					ebtables -t filter -D FORWARD -i $hs_up_if -p arp --arp-opcode request --arp-htype ethernet --arp-ptype ipv4 --arp-ip-dst 192.168.10.0/29 -j DROP
+				done
+			else
+				iptables -w -i $interface -D FORWARD -j forwarding_from_lan
+				iptables -w -o $interface -D FORWARD -j forwarding_to_lan
+				iptables -w -i $interface -t mangle -D FORWARD -j forwarding_from_lan
+				iptables -w -o $interface -t mangle -D FORWARD -j forwarding_to_lan
+				iptables -w -i $interface -t nat -D PREROUTING -j prerouting_from_lan
+			fi
+
+			for t in filter mangle; do
+				iptables -w -t $t -X forwarding_to_lan
+				iptables -w -t $t -X forwarding_from_lan
+			done
+			iptables -w -t nat -X prerouting_from_lan
+		fi
+	fi
+
+	# ebtables is not controlled by uci firewall package
+	# iptables will be emptied by firewall package
+	# but ebtables will not be
+	# flush ebtables before adding new rules
+	for t in filter nat broute; do
+		ebtables -t $t -F
+	done
+
+	if [[ -e $do_file ]]; then
+		if [[ $(uci get indiochilli.smartap.enable_chilli_kname) -eq 1 ]]; then
+			for t in filter mangle; do
+				iptables -w -t $t -N forwarding_to_lan
+				iptables -w -t $t -N forwarding_from_lan
+			done
+			iptables -w -t nat -N prerouting_from_lan
+
+			if [[ $(uci get indiochilli.smartap.chilli_bridge_mode) -eq 1 ]]; then
+				sysctl -w -q net.bridge.bridge-nf-call-iptables=1
+				iptables -w -I FORWARD -p udp --dport 67:68 -j ACCEPT
+
+				if [[ $(uci get indiochilli.smartap.bridge_mode_without_vlan) -eq 1 ]]; then
+					iptables -w -I FORWARD -p udp --dport 53 -j ACCEPT
+					iptables -w -I FORWARD -p udp --sport 53 -j ACCEPT
+				fi
+
+				for lan_if in $(uci get indiochilli.smartap.lan_dev) wlan-hs+; do
+					iptables -w -i $interface -I FORWARD -m physdev --physdev-is-bridged --physdev-in $lan_if -j forwarding_from_lan
+					iptables -w -i $interface -t mangle -A FORWARD -m physdev --physdev-is-bridged --physdev-in $lan_if -j forwarding_from_lan
+					iptables -w -o $interface -I FORWARD -m physdev --physdev-is-bridged --physdev-out $lan_if -j forwarding_to_lan
+					iptables -w -o $interface -t mangle -I FORWARD -m physdev --physdev-is-bridged --physdev-out $lan_if -j forwarding_to_lan
+					iptables -w -i $interface -t nat -I PREROUTING -m physdev --physdev-is-in --physdev-in $lan_if -j prerouting_from_lan
+					ebtables -t broute -A BROUTING -i $lan_if -p ip --ip-dst 198.18.0.1 -j redirect
+					ebtables -t broute -A BROUTING -i $lan_if -p ip --ip-dst 192.168.10.1 -j redirect
+				done
+
+				for hs_up_if in $(uci get indiochilli.smartap.hs_uplink_dev); do
+					ebtables -t filter -A INPUT -i $hs_up_if -p arp --arp-opcode request --arp-htype ethernet --arp-ptype ipv4 --arp-ip-dst 198.18.0.1 -j DROP
+					ebtables -t filter -A FORWARD -i $hs_up_if -p arp --arp-opcode request --arp-htype ethernet --arp-ptype ipv4 --arp-ip-dst 198.18.0.0/23 -j DROP
+					ebtables -t filter -A INPUT -i $hs_up_if -p arp --arp-opcode request --arp-htype ethernet --arp-ptype ipv4 --arp-ip-dst 192.168.10.1 -j DROP
+					ebtables -t filter -A FORWARD -i $hs_up_if -p arp --arp-opcode request --arp-htype ethernet --arp-ptype ipv4 --arp-ip-dst 192.168.10.0/29 -j DROP
+				done
+			else
+				iptables -w -i $interface -I FORWARD -j forwarding_from_lan
+				iptables -w -o $interface -I FORWARD -j forwarding_to_lan
+				iptables -w -i $interface -t mangle -I FORWARD -j forwarding_from_lan
+				iptables -w -o $interface -t mangle -I FORWARD -j forwarding_to_lan
+				iptables -w -i $interface -t nat -I PREROUTING -j prerouting_from_lan
+			fi
+			iptables -w -I FORWARD -m physdev --physdev-is-bridged --physdev-in mesh+ -j ACCEPT
+			iptables -w -I FORWARD -m physdev --physdev-is-bridged --physdev-out mesh+ -j ACCEPT
+			iptables -w -I FORWARD -m pkttype --pkt-type broadcast -j ACCEPT
+			iptables -w -I FORWARD -m pkttype --pkt-type multicast -j ACCEPT
+		fi
+
+		$do_file 2>&-
+	fi
+fi
+
+# always exit cleanly so that fw3 doesn't think this failed
+exit 0
