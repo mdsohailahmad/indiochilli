@@ -1,0 +1,14 @@
+#!/bin/sh
+
+if [ "$(uci get indiochilli.smartap.enable_chilli_kname)" == "1" ]; then
+r=$(iptables-save | awk '/(FORWARD|delegate_forward).*ctstate.*ESTABLISHED/ {
+$1="-D";
+gsub("\x22", "\x27", $0);
+print "iptables " $0 }')
+if [ -n "$r" ]; then
+tmp=$(mktemp /tmp/iptables_XXXXXX)
+echo $r > $tmp
+$SHELL $tmp
+rm -f $tmp
+fi
+fi

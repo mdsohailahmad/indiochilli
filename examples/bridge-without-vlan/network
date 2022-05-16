@@ -1,0 +1,67 @@
+config globals 'globals'
+        option ula_prefix 'fd35:d839:9543::/48'
+
+config interface 'loopback'
+        option ifname 'lo'
+        option proto 'static'
+        option ipaddr '127.0.0.1'
+        option netmask '255.0.0.0'
+
+config device
+        option name 'up'
+        option type 'bridge'
+        option stp '0'
+
+config device
+        option name 'down'
+        option type 'bridge'
+        option stp '0'
+
+config interface 'up_none'
+        option ifname 'up'
+        option proto 'none'
+
+config bridge-vlan
+        option device 'up'
+        option vlan '4090'
+        list ports 'eth1'
+
+config device
+        option type '8021q'
+        option name 'up0v0'
+        option ifname 'up'
+        option vid '4090'
+
+config interface 'up0v0'
+        option ucentral_name 'WAN'
+        option ucentral_path '/interfaces/0'
+        option ifname 'up0v0'
+        option metric '5'
+        option proto 'dhcp'
+        option peerdns '1'
+
+config interface 'wan2'
+        option ifname 'up0v0'
+        option ipaddr '198.18.0.1'
+        option netmask '255.255.254.0'
+        option proto 'static'
+
+config bridge-vlan
+        option device 'down'
+        option vlan '4089'
+        list ports 'eth0'
+
+config device
+        option type '8021q'
+        option name 'down1v0'
+        option ifname 'down'
+        option vid '4089'
+
+config interface 'down1v0'
+        option ucentral_name 'LAN'
+        option ucentral_path '/interfaces/1'
+        option ifname 'down1v0'
+        option metric '10'
+        option proto 'static'
+        option ipaddr '172.17.0.1/24'
+        option gateway '172.17.0.1'
